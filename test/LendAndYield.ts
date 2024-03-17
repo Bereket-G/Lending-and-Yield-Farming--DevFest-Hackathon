@@ -16,12 +16,16 @@ describe("StakingContract", () => {
         const LendERC20Token = await ethers.getContractFactory("LendToken");
         const LendErc20Token = await LendERC20Token.deploy("LendToken", "LND", "18", ethers.parseEther("100000000"));
 
+        const CollateralERC20Token = await ethers.getContractFactory("CollateralToken");
+        const CollateralErc20Token = await CollateralERC20Token.deploy("CollateralToken", "CT", "18", ethers.parseEther("100000000"));
+
         const StakingContract = await ethers.getContractFactory("StakingContract");
-        const contract = await StakingContract.deploy(LendErc20Token.getAddress());
+        const contract = await StakingContract.deploy(LendErc20Token.getAddress(), CollateralErc20Token.getAddress());
 
         return {
             contract,
             LendErc20Token: LendErc20Token,
+            CollateralErc20Token: CollateralErc20Token,
             deployer: signers.deployer,
             accounts: await ethers.getSigners(),
         };
@@ -75,5 +79,35 @@ describe("StakingContract", () => {
         await contract.connect(accounts[1]).stake(amountToStake);
 
         await expect(contract.connect(accounts[1]).unstake(amountToStake)).to.be.revertedWith("Staking period not expired");
+    });
+
+    it.skip("Should borrow tokens and pay back with fee", async () => {
+        const { contract, LendErc20Token, CollateralErc20Token, accounts } = await setupFixture();
+
+        const collateralAmount = ethers.parseEther("1000");
+        const borrowAmount = ethers.parseEther("100");
+
+        // Transfer collateral tokens to the contract
+        await CollateralErc20Token.connect(accounts[0]).approve(contract.getAddress(), collateralAmount);
+
+        // User borrows tokens
+        await contract.connect(accounts[1]).borrow(borrowAmount);
+
+        // Check if the user's debt balance has been updated
+        expect(await contract.debtRegister(accounts[1].address)).to.equal(borrowAmount);
+
+        // Check if the user received the borrowed tokens
+        expect(await LendErc20Token.balanceOf(accounts[1].address)).to.equal(borrowAmount);
+
+        // Pay back the borrowed amount with fee
+        await LendErc20Token.connect(accounts[1]).approve(contract.getAddress(), borrowAmount);
+        await contract.connect(accounts[1]).payBack(borrowAmount);
+
+        // Check if the user's debt balance has been reduced
+        expect(await contract.debtRegister(accounts[1].address)).to.equal(0);
+
+        // Check if the user received the appropriate amount after deducting the fee
+        const expectedBalance = toBN(borrowAmount).sub((toBN(borrowAmount).mul(toBN(10)).div(toBN(100)))); // 10% fee
+        expect(await LendErc20Token.balanceOf(accounts[1].address)).to.equal(expectedBalance);
     });
 });
