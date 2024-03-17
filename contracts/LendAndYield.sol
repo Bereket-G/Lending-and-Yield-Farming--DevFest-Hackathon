@@ -3,27 +3,35 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import {IOracle} from "./interfaces/IOracle.sol";
+import "hardhat/console.sol";
+
 
 contract StakingContract is Pausable {
     IERC20 public token; // The ERC20 token being staked
     IERC20 public collateralToken; // The ERC20 token being staked
+    IERC20 public wBTC; // The wrapped BTC
     address public owner; // The owner of the contract
     mapping(address => uint256) public stakes; // Maps user addresses to their stakes
     mapping(address => uint256) public stakingTime; // Maps user addresses to their staking time
     uint256 public stakingDuration = 30 days; // Define the staking duration
     uint256 public rewardPercentage = 5; // Define the reward percentage
     mapping(address => uint256) public debtRegister;
+    mapping(address => uint256) public wBTCDebtRegister;
 
+    address public BTCPriceFeedOracle;
 
     uint256 public THRESHOLD_TO_PAUSE = 100000000; // Define the reward percentage
 
     event Staked(address indexed user, uint256 amount, uint256 time);
     event Unstaked(address indexed user, uint256 amount, uint256 reward);
 
-    constructor(address _token, address _collateralToken) {
+    constructor(address _token, address _collateralToken, address _btcPriceFeedOracle, address _wBTC) {
         token = IERC20(_token);
         owner = msg.sender;
         collateralToken = IERC20(_collateralToken);
+        BTCPriceFeedOracle = _btcPriceFeedOracle;
+        wBTC = IERC20(_wBTC);
     }
 
     // Function to stake tokens
@@ -61,11 +69,9 @@ contract StakingContract is Pausable {
     }
 
     function borrow(uint256 _amount) external {
-
         if(_amount > THRESHOLD_TO_PAUSE) {
             _pause();
         }
-
         require(collateralToken.transferFrom(msg.sender, address(this), _amount), "Collateral token transfer failed");
 
         debtRegister[msg.sender] += _amount;
@@ -87,5 +93,28 @@ contract StakingContract is Pausable {
 
         // Revert back the collateralToken
         collateralToken.transfer(msg.sender, repayAmount);
+    }
+
+
+    function borrowWithBTCCollateral(uint256 _amount) external {
+        uint256 price = _queryPrice();
+
+        // Calculate the 70% of the price
+        uint256 amountToLend = (price * _amount * 70) / 100;
+
+        console.log("Fetched price", price, _amount, amountToLend);
+
+        require(wBTC.transferFrom(msg.sender, address(this), _amount), "Collateral token transfer failed");
+
+        wBTCDebtRegister[msg.sender] += _amount;
+
+        token.transfer(msg.sender, amountToLend);
+    }
+
+    /// @dev Queries the oracle for the latest price
+    ///      If fetched oracle price isn't valid returns the last price,
+    ///      else returns the new price from the oracle.
+    function _queryPrice() private view returns (uint price) {
+        price = IOracle(BTCPriceFeedOracle).getLatestPrice();
     }
 }

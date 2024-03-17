@@ -19,13 +19,23 @@ describe("StakingContract", () => {
         const CollateralERC20Token = await ethers.getContractFactory("CollateralToken");
         const CollateralErc20Token = await CollateralERC20Token.deploy("CollateralToken", "CT", "18", ethers.parseEther("100000000"));
 
+
+        const MockBTCPriceContract = await ethers.getContractFactory("MockBTCPriceFeedOracle");
+        const MockBTCPriceContractInstance = await MockBTCPriceContract.deploy();
+
+
+        const WBTCContract = await ethers.getContractFactory("WBTC");
+        const WBTCContractInstance = await WBTCContract.deploy("WrappedBTC", "WBTC", "18", ethers.parseEther("100000000"));
+
         const StakingContract = await ethers.getContractFactory("StakingContract");
-        const contract = await StakingContract.deploy(LendErc20Token.getAddress(), CollateralErc20Token.getAddress());
+        const contract = await StakingContract.deploy(LendErc20Token.getAddress(), CollateralErc20Token.getAddress(), MockBTCPriceContractInstance.getAddress(), WBTCContractInstance.getAddress());
 
         return {
             contract,
             LendErc20Token: LendErc20Token,
             CollateralErc20Token: CollateralErc20Token,
+            MockBTCPriceContractInstance: MockBTCPriceContractInstance,
+            WBTCContractInstance: WBTCContractInstance,
             deployer: signers.deployer,
             accounts: await ethers.getSigners(),
         };
@@ -81,21 +91,24 @@ describe("StakingContract", () => {
         await expect(contract.connect(accounts[1]).unstake(amountToStake)).to.be.revertedWith("Staking period not expired");
     });
 
-    it.skip("Should borrow tokens and pay back with fee", async () => {
-        const { contract, LendErc20Token, CollateralErc20Token, accounts } = await setupFixture();
+    it("Should borrow tokens and pay back with fee", async () => {
+        const { deployer, contract, LendErc20Token, CollateralErc20Token, accounts } = await setupFixture();
 
-        const collateralAmount = ethers.parseEther("1000");
+        const collateralAmount = ethers.parseEther("100");
         const borrowAmount = ethers.parseEther("100");
 
+        await LendErc20Token.transfer(contract.getAddress(), collateralAmount); // transferring the amount to be lend
+
+        await CollateralErc20Token.connect(accounts[0]).transfer(accounts[1].address, collateralAmount);
+
         // Transfer collateral tokens to the contract
-        await CollateralErc20Token.connect(accounts[0]).approve(contract.getAddress(), collateralAmount);
+        await CollateralErc20Token.connect(accounts[1]).approve(contract.getAddress(), collateralAmount);
 
         // User borrows tokens
         await contract.connect(accounts[1]).borrow(borrowAmount);
 
         // Check if the user's debt balance has been updated
         expect(await contract.debtRegister(accounts[1].address)).to.equal(borrowAmount);
-
         // Check if the user received the borrowed tokens
         expect(await LendErc20Token.balanceOf(accounts[1].address)).to.equal(borrowAmount);
 
@@ -108,6 +121,37 @@ describe("StakingContract", () => {
 
         // Check if the user received the appropriate amount after deducting the fee
         const expectedBalance = toBN(borrowAmount).sub((toBN(borrowAmount).mul(toBN(10)).div(toBN(100)))); // 10% fee
-        expect(await LendErc20Token.balanceOf(accounts[1].address)).to.equal(expectedBalance);
+
+        expect(await CollateralErc20Token.balanceOf(accounts[1].address)).to.equal(expectedBalance);
     });
+
+
+    it("Should not allow unstaking before staking period expires", async () => {
+        const { MockBTCPriceContractInstance, contract, WBTCContractInstance, LendErc20Token , accounts } = await setupFixture();
+
+        const BTCAmount = 1;
+
+        const BTCRate = 70000;
+
+        await WBTCContractInstance.transfer(accounts[1], BTCAmount); // Transfer 1 BTC to account one, so that he can spend to borrow 70% of BTC worth
+
+        await WBTCContractInstance.connect(accounts[1]).approve(contract.getAddress(), "100");
+
+        await MockBTCPriceContractInstance.setWBTCPrice(BTCRate);
+
+        const lendAmount = 70000 * 0.7 * BTCAmount;
+
+        await LendErc20Token.transfer(contract.getAddress(), lendAmount);
+
+        const readPrice = await MockBTCPriceContractInstance.getLatestPrice();
+
+        expect(BTCRate).to.equal(readPrice);
+
+        await contract.connect(accounts[1]).borrowWithBTCCollateral(BTCAmount);
+
+        expect(await LendErc20Token.balanceOf(accounts[1].address)).to.equal(lendAmount);
+
+        expect(await WBTCContractInstance.balanceOf(contract.getAddress())).to.equal(BTCAmount);
+    });
+
 });
